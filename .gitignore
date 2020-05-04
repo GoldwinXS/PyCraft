@@ -3,4 +3,5 @@ __pycache__
 venv
 cube_map
 .idea/
-
+.DS_Store
+.gitignore

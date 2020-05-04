@@ -3,8 +3,8 @@ from noise import pnoise2
 import numpy as np
 from direct.showbase.ShowBase import ShowBase, DirectionalLight
 from panda3d.core import GeomTriangles, Geom, GeomNode, GeomVertexData, GeomVertexWriter, GeomVertexFormat, \
-    DirectionalLight, AmbientLight, PointLight, Patchfile
-from cube import cube_data, normal_face_mapping
+    DirectionalLight, AmbientLight, PointLight, Patchfile, NodePath, TextureAttrib,AsyncTask
+from cube import cube_data, normal_face_mapping, texture_mapping
 from copy import copy
 from noise import pnoise2
 import numpy as np
@@ -12,9 +12,20 @@ import time
 from copy import deepcopy
 from panda3d.bullet import BulletRigidBodyNode, BulletTriangleMeshShape, BulletTriangleMesh
 import sys
+import os
+
+block_id_mapping = {
+    0: {'name': 'dirt', 'color': (0.5, 0.5, 0.3, 1)},
+    1: {'name': 'grass', 'color': (0.5, 0.75, 0.5, 1)},
+    2: {'name': 'stone', 'color': (0.44, 0.5, 0.56, 1)},
+    3: {'name': 'water', 'color': (0.12, 0.56, 1.0, 0.5)},
+    4: {'name': 'sand', 'color': (0.98, 0.85, 0.37, 1)},
+    5: {'name': 'bedrock', 'color': (0, 0, 0, 1)},
+
+}
 
 
-def make_cube_geom(pos=(0, 0, 0), geom_color=(1, 1, 1, 1), scale=2):
+def make_cube_geom(pos=(0, 0, 0), geom_color=(1, 1, 1, 1)):
     format = GeomVertexFormat.getV3n3cpt2()
 
     shift_x, shift_y, shift_z = pos
@@ -35,8 +46,10 @@ def make_cube_geom(pos=(0, 0, 0), geom_color=(1, 1, 1, 1), scale=2):
     texcoord = GeomVertexWriter(vdata, 'texcoord')
 
     # define available vertexes here
-    [vertex.addData3(*v) for v in cube_vertex_list]
+
     [normal.addData3(*n) for n in cube_data["vertexNormals"]]
+    [vertex.addData3(*v) for v in cube_vertex_list]
+
     [color.addData4f(*geom_color) for _ in cube_vertex_list]
     [texcoord.addData2f(1, 1) for _ in cube_vertex_list]
 
@@ -234,10 +247,6 @@ class PlayerMovement:
     def make_light(self):
 
         d_light = DirectionalLight('dlight')
-        d_light.setColor((0.2, 0.3, 0.3, 1))
-
-        # d_light_np = self.app.render.attachNewNode(self.app.d_light)
-        d_light = DirectionalLight('dlight')
         d_light.setColor((0.3, 0.3, 0.3, 1))
         d_light_np = self.app.render.attachNewNode(d_light)
         self.app.render.setLight(d_light_np)
@@ -252,11 +261,11 @@ class PlayerMovement:
 
 
 class World:
-    def __init__(self, app_class, n_grids=64):
+    def __init__(self, app_class, n_grids=32):
         self.app = app_class
         self.cell_size = 8
         self.world_size = n_grids * self.cell_size
-        self.view_distance_chunks = 6
+        self.view_distance_chunks = 4
         self.view_distance = self.cell_size * self.view_distance_chunks
         self.map_height_variation = 100
         self.app.accept('e', self.remove_block)
@@ -266,14 +275,32 @@ class World:
 
         self.seen_cells = set()
         self.nearby_cells = []
+
         self.cells = {(x, y): {'visible': False,
-                               'node_path': None,
+                               'node_path': {material_id: GeomNode('empty') for material_id in block_id_mapping.keys()},
                                'chunk_data': None,
                                'bullet_mesh': None}
                       for x in range(n_grids)
                       for y in range(n_grids)}
 
+        self.textures = {}
+        self.load_textures()
+
+        # self.test_texture = self.app.loader.loadTexture('cube_map/test_texture.png')
+
+        # async_mgr = AsyncTask()
+        # # self.app.render.
+        # async_ = async_mgr.getManager()
+        # async_.add(self.build_world, 'build-world')
         self.app.taskMgr.add(self.build_world, 'build-world')
+
+    def load_textures(self):
+        self.textures = {}
+        available_textures = os.listdir('assets/')
+        for texture in available_textures:
+            for block_id in block_id_mapping.keys():
+                if texture.replace('.jpg', '') == block_id_mapping[block_id]['name']:
+                    self.textures[block_id] = self.app.loader.loadTexture('assets/' + texture)
 
     def build_world(self, task):
         x = self.app.ref_node.getX()
@@ -309,7 +336,7 @@ class World:
         #     else:
         #         self.cells[k]['visible'] = False
 
-        # TODO: fix this complicated logic tree
+
         for k, v in self.cells.items():
             # k = tuple(cell_ind)
             # v = self.cells[k]
@@ -323,39 +350,58 @@ class World:
             if self.pythag((x, y), (middle_x, middle_y)) < self.view_distance:
 
                 if v['visible']:
+                    # if we can already see it, do not do anything
                     pass
+                elif v['chunk_data'] is None:
+                    # if we've never seen this chunk before, then generate it for the first time
+
+                    chunk = Chunk(
+                        name=k,
+                        x_range=(min_px, max_px),
+                        y_range=(min_py, max_py),
+                        octaves=self.map_octaves,
+                        map_variation=self.map_height_variation,
+                        total_world_size=self.world_size,
+                        loader=self.app.loader
+                    )
+
+                    # attach all nodes for all different materials
+                    for material_id in v['node_path'].keys():
+                        v['node_path'][material_id] = self.app.render.attachNewNode(chunk.material_nodes[material_id])
+                    v['node_path'][3].setTransparency(True) # make water transparent
+
+                    # v['node_path'] = self.app.render.attachNewNode(chunk.chunk_node)
+                    v['chunk_data'] = chunk
+                    v['bullet_mesh'] = self.app.render.attachNewNode(BulletRigidBodyNode('bullet-' + str(k)))
+                    v['bullet_mesh'].node().addShape(BulletTriangleMeshShape(chunk.bullet_mesh, dynamic=False))
+                    self.app.bullet_world.attach(v['bullet_mesh'].node())
+                    # v['node_path'].setTexture(self.test_texture)
+                    self.texture_materials(k)
+
                 else:
-                    if v['node_path'] is None:
+                    # if we already have chunk data, then re-attach the nodes to render
 
-                        chunk = Chunk(
-                            name=k,
-                            x_range=(min_px, max_px),
-                            y_range=(min_py, max_py),
-                            octaves=self.map_octaves,
-                            map_variation=self.map_height_variation,
-                            total_world_size=self.world_size,
-                        )
-
-                        v['node_path'] = self.app.render.attachNewNode(chunk.chunk_node)
-                        v['chunk_data'] = chunk
-                        v['bullet_mesh'] = self.app.render.attachNewNode(BulletRigidBodyNode('bullet-' + str(k)))
-                        v['bullet_mesh'].node().addShape(BulletTriangleMeshShape(chunk.bullet_mesh, dynamic=False))
-                        self.app.bullet_world.attach(v['bullet_mesh'].node())
+                    for material_id in v['node_path'].keys():
+                        if v['node_path'][material_id] is not None:
+                            v['node_path'][material_id].reparentTo(self.app.render)
 
 
-                    else:
-                        v['node_path'].reparentTo(self.app.render)
-                        v['bullet_mesh'].reparentTo(self.app.render)
-                        self.app.bullet_world.attach(v['bullet_mesh'].node())
+                    self.texture_materials(k)
+                    v['bullet_mesh'].reparentTo(self.app.render)
+                    self.app.bullet_world.attach(v['bullet_mesh'].node())
 
-                    v['visible'] = True
+                v['visible'] = True
 
             else:
-                if v['visible']:  # if the cell if currently visible, rm from render graph
+                # if the cell if currently visible, rm from render graph
+                if v['visible']:
                     if v['node_path'] is not None:
-                        v['node_path'].detachNode()
+                        for material_id in block_id_mapping.keys():
+                            v['node_path'][material_id].detachNode()
                         v['bullet_mesh'].detachNode()
                         self.app.bullet_world.remove(v['bullet_mesh'].node())
+
+                # set the flag to false so that we do not try to generate the mesh
                 v['visible'] = False
 
         return task.cont
@@ -378,7 +424,10 @@ class World:
             # if we hit, then first find out which chunk to change
             chunk = result.getNode()
 
-            cell_location = tuple(map(int, chunk.name.replace('bullet-(', '').rstrip(')').split(',')))
+            if 'bullet' in chunk.name:
+                cell_location = tuple(map(int, chunk.name.replace('bullet-(', '').rstrip(')').split(',')))
+            else:
+                return
 
             # remove block and update chunk data
             self.cells[cell_location]['chunk_data'].edit_block(result.getHitPos(), method=method)
@@ -386,19 +435,33 @@ class World:
             # detach and remove meshes
             self.app.bullet_world.remove(self.cells[cell_location]['bullet_mesh'].node())
             self.cells[cell_location]['bullet_mesh'].removeNode()
-            self.cells[cell_location]['node_path'].removeNode()
-            # self.cells[cell_location]['bullet_mesh'].remove_node()
 
-            # attach and get a new paths
+            for material_id in self.cells[cell_location]['node_path'].keys():
+                self.cells[cell_location]['node_path'][material_id].removeNode()
+
             self.cells[cell_location]['bullet_mesh'] = self.app.render.attachNewNode(
                 BulletRigidBodyNode('bullet-' + str(cell_location)))
-            self.cells[cell_location]['node_path'] = self.app.render.attachNewNode(
-                self.cells[cell_location]['chunk_data'].chunk_node)
+
+            for material_id in self.cells[cell_location]['node_path'].keys():
+                self.cells[cell_location]['node_path'][material_id] = self.app.render.attachNewNode(
+                    self.cells[cell_location]['chunk_data'].material_nodes[material_id])
+
+            self.cells[cell_location]['node_path'][3].setTransparency(True)  # make water transparent
 
             # re-add the bullet mesh to the bullet node
             self.cells[cell_location]['bullet_mesh'].node().addShape(
                 BulletTriangleMeshShape(self.cells[cell_location]['chunk_data'].bullet_mesh, dynamic=False))
             self.app.bullet_world.attach(self.cells[cell_location]['bullet_mesh'].node())
+
+            self.texture_materials(cell_location)
+
+    def texture_materials(self, current_cell):
+        for material_id in block_id_mapping.keys():
+            if material_id in list(self.textures.keys()):
+                self.cells[current_cell]["node_path"][material_id].setTexture(self.textures[material_id])
+
+            # if block_id_mapping[material_id]['name'] in self.textures[material_id]:
+            #     self.cells[current_cell]["node_path"][material_id].setTexture(self.test_texture)
 
     @staticmethod
     def pythag(pos1, pos2):
@@ -439,16 +502,6 @@ class Chunk:
         5: 'right',
     }
 
-    block_id_mapping = {
-        0: {'name': 'dirt', 'color': (0.5, 0.5, 0.3, 1)},
-        1: {'name': 'grass', 'color': (0.5, 0.75, 0.5, 1)},
-        2: {'name': 'stone', 'color': (0.44, 0.5, 0.56, 1)},
-        3: {'name': 'water', 'color': (0.12, 0.56, 1.0, 0.5)},
-        4: {'name': 'sand', 'color': (0.98, 0.85, 0.37, 1)},
-        5: {'name': 'bedrock', 'color': (0, 0, 0, 1)},
-
-    }
-
     # this array will track where all of the blocks are, including what they are, and what faces are hidden
     # HOW TO USE
     # arr[x][y][z][data]
@@ -462,11 +515,11 @@ class Chunk:
     #           right hidden]       | item: 7
     # NOTE: TOTAL 8 POSSIBILITIES FOR DATA
 
-    def __init__(self, name, x_range, y_range, octaves, map_variation, total_world_size):
+    def __init__(self, name, x_range, y_range, octaves, map_variation, total_world_size, loader):
         self.chunk_size = x_range[1] - x_range[0]
         self.name = name
-        self.min_game_bound = -2  # lowest possible point is -1 chunk down
-        self.max_game_bound = 2
+        self.min_game_bound = -4  # lowest possible point is -1 chunk down
+        self.max_game_bound = 4
 
         if not isinstance(name, str):
             self.name = str(name)
@@ -479,8 +532,10 @@ class Chunk:
         self.x_range, self.y_range, self.octaves, self.map_variation, self.total_world_size = x_range, y_range, octaves, map_variation, total_world_size
         self.terrain_height_noise = self.calc_pnoise2_in_range()
 
-        self.chunk_node = None
+        self.material_nodes = {material_id: GeomNode(self.name) for material_id in block_id_mapping.keys()}
+
         self.bullet_mesh = None
+        self.texture_np = None
 
         self.place_blocks()
         self.generate_chunk()
@@ -488,8 +543,10 @@ class Chunk:
     def generate_chunk(self):
         """ this function will generate the actual geometry that is the chunk """
         self.update_block_faces()
-        self.chunk_node = GeomNode(self.name)
+        self.material_nodes = {material_id: GeomNode(self.name) for material_id in block_id_mapping.keys()}
         self.bullet_mesh = BulletTriangleMesh()
+        # self.texture_np = NodePath('textures')
+
         for i in range(self.arr_x):
             for j in range(self.arr_y):
                 for k in range(self.arr_z):
@@ -499,11 +556,10 @@ class Chunk:
                         rel_y = j + self.y_range[0]
                         # only x and y need to be shifted, z is fine as is
                         geom = self.make_cube_geom(pos=(rel_x, rel_y, k),
-                                                   faces_no_draw=self.block_arr[i, j, k][2:],
-                                                   geom_color=self.block_id_mapping[self.block_arr[i, j, k][1]][
-                                                       'color'])
+                                                   faces_no_draw=self.block_arr[i, j, k][2:])
 
-                        self.chunk_node.addGeom(geom)
+                        material_id = self.block_arr[i, j, k][1]
+                        self.material_nodes[material_id].addGeom(geom)
                         self.bullet_mesh.addGeom(geom)
 
     def place_blocks(self):
@@ -666,7 +722,7 @@ class Chunk:
 
         return arr
 
-    def make_cube_geom(self, pos=(0, 0, 0), geom_color=(1, 1, 1, 1), faces_no_draw=(0, 0, 0, 0, 0, 0)):
+    def make_cube_geom(self, pos=(0, 0, 0), geom_color=(1, 1, 1, 0.5), faces_no_draw=(0, 0, 0, 0, 0, 0)):
         format = GeomVertexFormat.getV3n3cpt2()
 
         shift_x, shift_y, shift_z = pos
@@ -683,11 +739,13 @@ class Chunk:
         color = GeomVertexWriter(vdata, 'color')
         texcoord = GeomVertexWriter(vdata, 'texcoord')
 
+        test_textcoords = []
+
         # define available vertexes here
         [vertex.addData3(*v) for v in cube_vertex_list]
         [normal.addData3(*n) for n in cube_data["vertexNormals"]]
         [color.addData4f(*geom_color) for _ in cube_vertex_list]
-        [texcoord.addData2f(1, 1) for _ in cube_vertex_list]
+        [texcoord.addData2f(*t) for t in texture_mapping]
 
         """ CREATE A NEW PRIMITIVE """
         prim = GeomTriangles(Geom.UHStatic)

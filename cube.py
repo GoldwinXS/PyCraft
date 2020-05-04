@@ -31,3 +31,32 @@ normal_face_mapping = {
     "left": [1, 0, 0]
 
 }
+
+face_normals = set([tuple(elem) for elem in cube_data['vertexNormals']])
+
+normal_index_mapping = {
+    # which normal corresponds to which vertex
+    normal: [x for x in cube_data['indices'] if cube_data['vertexNormals'][x] == list(normal)]
+    for normal in face_normals
+}
+
+texture_mapping = [
+    # top
+    [0, 0], [1, 0], [0, 1], [1, 1],
+
+    # bottom
+    [0, 0], [1, 0], [0, 1], [1, 1],
+
+    # back
+    [0, 0], [1, 0], [0, 1], [1, 1],
+
+    # front
+    [0, 0], [1, 0], [0, 1], [1, 1],
+
+    # left
+    [0, 0], [1, 0], [0, 1], [1, 1],
+
+    # right
+    [0, 0], [1, 0], [0, 1], [1, 1],
+
+]
