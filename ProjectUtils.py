@@ -3,14 +3,14 @@ from noise import pnoise2
 import numpy as np
 from direct.showbase.ShowBase import ShowBase, DirectionalLight
 from panda3d.core import GeomTriangles, Geom, GeomNode, GeomVertexData, GeomVertexWriter, GeomVertexFormat, \
-    DirectionalLight, AmbientLight, PointLight, Patchfile, NodePath, TextureAttrib,AsyncTask
+    DirectionalLight, AmbientLight, PointLight, Patchfile, NodePath, TextureAttrib, AsyncTask,BitMask32,Vec3
 from cube import cube_data, normal_face_mapping, texture_mapping
 from copy import copy
 from noise import pnoise2
 import numpy as np
 import time
 from copy import deepcopy
-from panda3d.bullet import BulletRigidBodyNode, BulletTriangleMeshShape, BulletTriangleMesh
+from panda3d.bullet import BulletRigidBodyNode, BulletTriangleMeshShape, BulletTriangleMesh,BulletBoxShape
 import sys
 import os
 
@@ -128,6 +128,7 @@ class PlayerMovement:
         self.app.accept('l', self.make_light)
         self.app.accept('q', self.toggle_wireframe)
         self.app.accept('escape', self.exit_app)
+        self.app.accept('b', self.make_box)
 
         self.app.taskMgr.add(self.cameraTask, 'cameraTask')
 
@@ -136,13 +137,9 @@ class PlayerMovement:
         mw = self.app.mouseWatcherNode
         dx = dy = 0
         x = y = 0
-        hasMouse = mw.hasMouse()
-        if hasMouse:
-            # get the window manager's idea of the mouse position
+        if mw.hasMouse():
             x, y = mw.getMouseX(), mw.getMouseY()
-
             if self.lastMouseX is not None:
-                # get the delta
                 dx, dy = x - self.lastMouseX, y - self.lastMouseY
             else:
                 # no data to compare with yet
@@ -259,6 +256,29 @@ class PlayerMovement:
         d_light_np.setPos(self.ref_node.getPos())
         d_light_np.setHpr(self.ref_node.getHpr())
 
+    def make_box(self):
+        # make box and attach it to render
+        box_geom = make_cube_geom(geom_color=(1, 0, 0, 1))
+        box_geom_node = GeomNode('box')
+        box_geom_node.addGeom(box_geom)
+        box_geom_node_path = self.app.render.attachNewNode(box_geom_node)
+
+        shape = BulletBoxShape(Vec3(0.5, 0.5, 0.5))
+
+        # 1. Make and attach a new rigid bullet node
+        b_mesh_np = self.app.render.attachNewNode(BulletRigidBodyNode('bullet-node'))
+
+        # 2. add a mass and shape to the node
+        b_mesh_np.node().setMass(1.0)
+        b_mesh_np.node().addShape(shape)
+
+        # 3. not sure what this is
+        b_mesh_np.node().setDeactivationEnabled(False)
+        box_geom_node_path.reparentTo(b_mesh_np)
+        b_mesh_np.setPos(self.ref_node.getPos())
+
+        self.app.bullet_world.attach(b_mesh_np.node())
+
 
 class World:
     def __init__(self, app_class, n_grids=32):
@@ -336,7 +356,6 @@ class World:
         #     else:
         #         self.cells[k]['visible'] = False
 
-
         for k, v in self.cells.items():
             # k = tuple(cell_ind)
             # v = self.cells[k]
@@ -368,7 +387,7 @@ class World:
                     # attach all nodes for all different materials
                     for material_id in v['node_path'].keys():
                         v['node_path'][material_id] = self.app.render.attachNewNode(chunk.material_nodes[material_id])
-                    v['node_path'][3].setTransparency(True) # make water transparent
+                    v['node_path'][3].setTransparency(True)  # make water transparent
 
                     # v['node_path'] = self.app.render.attachNewNode(chunk.chunk_node)
                     v['chunk_data'] = chunk
@@ -384,7 +403,6 @@ class World:
                     for material_id in v['node_path'].keys():
                         if v['node_path'][material_id] is not None:
                             v['node_path'][material_id].reparentTo(self.app.render)
-
 
                     self.texture_materials(k)
                     v['bullet_mesh'].reparentTo(self.app.render)
@@ -424,7 +442,7 @@ class World:
             # if we hit, then first find out which chunk to change
             chunk = result.getNode()
 
-            if 'bullet' in chunk.name:
+            if 'bullet-(' in chunk.name:
                 cell_location = tuple(map(int, chunk.name.replace('bullet-(', '').rstrip(')').split(',')))
             else:
                 return

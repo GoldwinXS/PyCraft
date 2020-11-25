@@ -29,7 +29,6 @@ normal_face_mapping = {
 
     "right": [-1, 0, 0],
     "left": [1, 0, 0]
-
 }
 
 face_normals = set([tuple(elem) for elem in cube_data['vertexNormals']])
